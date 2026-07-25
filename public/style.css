@@ -1,0 +1,117 @@
+body {
+  margin: 0;
+  color: #1f2933;
+  background: #f5f7fa;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.wrap {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 28px;
+}
+.narrow {
+  max-width: 720px;
+}
+.topbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+}
+h1 {
+  margin: 0 0 6px;
+  font-size: 28px;
+  font-weight: 700;
+}
+.meta {
+  margin: 0;
+  color: #64748b;
+}
+a {
+  color: #0f5e9c;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+.links {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+.links a,
+.topbar nav a {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #fff;
+}
+.table-shell {
+  margin-top: 22px;
+  overflow: auto;
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  background: #fff;
+}
+table {
+  width: 100%;
+  min-width: 1280px;
+  border-collapse: collapse;
+}
+.archive table {
+  min-width: 720px;
+}
+th,
+td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #e6edf3;
+  text-align: left;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.archive th,
+.archive td {
+  text-align: left;
+}
+.archive th:nth-child(2),
+.archive th:nth-child(3),
+.archive td:nth-child(2),
+.archive td:nth-child(3) {
+  text-align: right;
+}
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: #334155;
+  background: #eef3f8;
+  cursor: pointer;
+  user-select: none;
+}
+th::after {
+  content: " ↕";
+  color: #8796a8;
+  font-size: 11px;
+}
+td:nth-child(2),
+td:nth-child(4),
+td:nth-child(5),
+td:nth-child(6),
+td:nth-child(7),
+td:nth-child(8),
+td:nth-child(9),
+td:nth-child(13) {
+  text-align: right;
+}
+tbody tr:hover {
+  background: #f8fafc;
+}
+@media (max-width: 720px) {
+  .wrap {
+    padding: 18px;
+  }
+  .topbar {
+    align-items: start;
+    flex-direction: column;
+  }
+}
