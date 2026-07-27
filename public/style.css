@@ -93,14 +93,14 @@ th::after {
   color: #8796a8;
   font-size: 11px;
 }
-td:nth-child(2),
-td:nth-child(4),
-td:nth-child(5),
-td:nth-child(6),
-td:nth-child(7),
-td:nth-child(8),
-td:nth-child(9),
-td:nth-child(13) {
+#stock-table td:nth-child(1),
+#stock-table td:nth-child(4),
+#stock-table td:nth-child(5),
+#stock-table td:nth-child(6),
+#stock-table td:nth-child(7),
+#stock-table td:nth-child(8),
+#stock-table td:nth-child(9),
+#stock-table td:nth-child(13) {
   text-align: right;
 }
 tbody tr:hover {

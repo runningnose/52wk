@@ -353,13 +353,24 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 
 def upsert_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
-    placeholders = ",".join("?" for _ in COLUMNS)
-    updates = ",".join(f"{column}=excluded.{column}" for column in COLUMNS[2:])
-    sql = (
-        f"INSERT INTO stocks_52wk ({','.join(COLUMNS)}) VALUES ({placeholders}) "
-        f"ON CONFLICT(date,ticker,type) DO UPDATE SET {updates}"
+    insert_sql = (
+        f"INSERT INTO stocks_52wk ({','.join(COLUMNS)}) "
+        f"VALUES ({','.join('?' for _ in COLUMNS)})"
     )
-    conn.executemany(sql, [[row.get(column) for column in COLUMNS] for row in rows])
+    update_columns = [column for column in COLUMNS if column not in {"date", "ticker", "type"}]
+    update_sql = (
+        f"UPDATE stocks_52wk SET {','.join(f'{column} = ?' for column in update_columns)} "
+        "WHERE date = ? AND ticker = ? AND type = ?"
+    )
+
+    for row in rows:
+        cursor = conn.execute(
+            update_sql,
+            [row.get(column) for column in update_columns]
+            + [row.get("date"), row.get("ticker"), row.get("type")],
+        )
+        if cursor.rowcount == 0:
+            conn.execute(insert_sql, [row.get(column) for column in COLUMNS])
     conn.commit()
 
 
@@ -693,14 +704,14 @@ th::after {
   color: #8796a8;
   font-size: 11px;
 }
-td:nth-child(2),
-td:nth-child(4),
-td:nth-child(5),
-td:nth-child(6),
-td:nth-child(7),
-td:nth-child(8),
-td:nth-child(9),
-td:nth-child(13) {
+#stock-table td:nth-child(1),
+#stock-table td:nth-child(4),
+#stock-table td:nth-child(5),
+#stock-table td:nth-child(6),
+#stock-table td:nth-child(7),
+#stock-table td:nth-child(8),
+#stock-table td:nth-child(9),
+#stock-table td:nth-child(13) {
   text-align: right;
 }
 tbody tr:hover {

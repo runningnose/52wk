@@ -27,6 +27,8 @@ Generated files:
 
 The SQLite table has a unique key on `(date, ticker, type)`.
 
+The script avoids newer SQLite upsert syntax and works with SQLite 3.7.x.
+
 ## Options
 
 ```bash
@@ -40,3 +42,7 @@ Use `--render-only` to rebuild `public/` pages from the existing SQLite data wit
 ```bash
 python collect_52wk.py --render-only --date 2026-07-25
 ```
+
+## Deployment
+
+For Amazon Linux 2 deployment instructions using `/home/choochoo/52wk` and `/usr/share/nginx/html/choo-choo-train/52wk`, see `DEPLOY_AWS_LINUX_2.md`.
