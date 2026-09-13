@@ -5,6 +5,10 @@ import argparse
 import datetime as dt
 import html
 import math
+import os
+import platform
+import random
+import shutil
 import sqlite3
 import sys
 import time
@@ -23,6 +27,7 @@ except ImportError:  # pragma: no cover
 
 BARCHART_BASE = "https://www.barchart.com"
 BARCHART_API = f"{BARCHART_BASE}/proxies/core-api/v1/quotes/get"
+BARCHART_BROWSER_EVALUATE_ATTEMPTS = 3
 
 PAGES = {
     "high": f"{BARCHART_BASE}/stocks/highs-lows/highs",
@@ -85,6 +90,10 @@ class BarchartRow:
     row_type: str
 
 
+class BarchartAccessError(RuntimeError):
+    """Raised when Barchart rejects an otherwise valid public-page request."""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Collect Barchart 52-week highs/lows and enrich with Yahoo Finance."
@@ -95,11 +104,36 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=5000)
     parser.add_argument("--skip-yahoo", action="store_true")
     parser.add_argument(
+        "--random-delay",
+        action="store_true",
+        help="Wait a random 1 to 59 minutes before starting.",
+    )
+    source_group = parser.add_mutually_exclusive_group()
+    source_group.add_argument(
+        "--try-barchart-api",
+        action="store_true",
+        help=(
+            "Try Barchart's direct HTTP API first, then fall back to the browser "
+            "on HTTP 401/403. By default the direct API is skipped."
+        ),
+    )
+    source_group.add_argument(
+        "--barchart-source",
+        choices=("auto", "http", "browser"),
+        default=None,
+        help=(
+            "Explicit Barchart source selection retained for backward compatibility."
+        ),
+    )
+    parser.add_argument(
         "--render-only",
         action="store_true",
         help="Regenerate HTML from the existing SQLite data without scraping.",
     )
     args = parser.parse_args()
+
+    if args.random_delay:
+        random_startup_delay()
 
     if yf is None and not args.skip_yahoo and not args.render_only:
         raise SystemExit("yfinance is not installed. Run: pip install -r requirements.txt")
@@ -110,11 +144,68 @@ def main() -> int:
         init_db(conn)
         if not args.render_only:
             rows: list[dict[str, Any]] = []
-            session = barchart_session()
+            barchart_batches: dict[str, list[BarchartRow]] = {}
+            session: requests.Session | None = None
+            browser_client: BarchartBrowserClient | None = None
+            active_source = args.barchart_source or (
+                "auto" if args.try_barchart_api else "browser"
+            )
+            try:
+                if active_source != "browser":
+                    try:
+                        session = barchart_session()
+                    except BarchartAccessError:
+                        if active_source == "http":
+                            raise
+                        print(
+                            "Barchart rejected the HTTP page request; using anonymous browser fallback.",
+                            file=sys.stderr,
+                        )
+                        active_source = "browser"
+
+                for row_type in ("high", "low"):
+                    if active_source == "browser":
+                        if browser_client is None:
+                            browser_client = BarchartBrowserClient()
+                        barchart_rows = browser_client.fetch_rows(
+                            row_type, args.date, args.limit
+                        )
+                    else:
+                        assert session is not None
+                        try:
+                            barchart_rows = fetch_barchart_rows(
+                                session, row_type, args.date, args.limit
+                            )
+                        except BarchartAccessError:
+                            if active_source == "http":
+                                raise
+                            print(
+                                "Barchart rejected the HTTP API request; using anonymous "
+                                "browser fallback.",
+                                file=sys.stderr,
+                            )
+                            active_source = "browser"
+                            browser_client = BarchartBrowserClient()
+                            barchart_rows = browser_client.fetch_rows(
+                                row_type, args.date, args.limit
+                            )
+
+                    print(
+                        f"Fetched {len(barchart_rows)} Barchart {row_type} rows "
+                        f"via {active_source}"
+                    )
+                    barchart_batches[row_type] = barchart_rows
+            finally:
+                if browser_client is not None:
+                    browser_client.close()
+
+            # Fetch both Barchart lists before starting the slower Yahoo lookups.
+            # This keeps the browser from sitting idle long enough for Barchart's
+            # page scripts to redirect or reload it between the two lists.
             for row_type in ("high", "low"):
-                barchart_rows = fetch_barchart_rows(session, row_type, args.date, args.limit)
-                print(f"Fetched {len(barchart_rows)} Barchart {row_type} rows")
-                enriched = enrich_rows(barchart_rows, skip_yahoo=args.skip_yahoo)
+                enriched = enrich_rows(
+                    barchart_batches[row_type], skip_yahoo=args.skip_yahoo
+                )
                 rows.extend(enriched)
             upsert_rows(conn, rows)
         archive_rows = get_archive_summary(conn)
@@ -159,6 +250,15 @@ def main() -> int:
     return 0
 
 
+def random_startup_delay() -> None:
+    delay_minutes = random.randint(1, 59)
+    print(
+        f"Delaying start for {delay_minutes} minute(s).",
+        flush=True,
+    )
+    time.sleep(delay_minutes * 60)
+
+
 def barchart_session() -> requests.Session:
     session = requests.Session()
     session.headers.update(
@@ -174,6 +274,10 @@ def barchart_session() -> requests.Session:
         }
     )
     response = session.get(PAGES["high"], timeout=30)
+    if response.status_code in {401, 403}:
+        raise BarchartAccessError(
+            f"Barchart rejected the public page request with HTTP {response.status_code}."
+        )
     response.raise_for_status()
     xsrf = session.cookies.get("XSRF-TOKEN")
     if xsrf:
@@ -190,17 +294,7 @@ def fetch_barchart_rows(
     referer = PAGES[row_type]
 
     while len(rows) < limit:
-        params = {
-            "lists": BARCHART_LISTS[row_type],
-            "fields": BARCHART_FIELDS,
-            "orderBy": "symbol",
-            "orderDir": "asc",
-            "meta": "field.shortName,field.type,field.description,lists.lastUpdate",
-            "hasOptions": "true",
-            "page": page,
-            "limit": page_size,
-            "raw": 1,
-        }
+        params = barchart_request_params(row_type, page, page_size)
         response = session.get(
             BARCHART_API,
             params=params,
@@ -208,7 +302,7 @@ def fetch_barchart_rows(
             timeout=45,
         )
         if response.status_code in {401, 403}:
-            raise RuntimeError(
+            raise BarchartAccessError(
                 f"Barchart rejected the {row_type} request with HTTP {response.status_code}. "
                 "The public endpoint may require a current browser token."
             )
@@ -234,6 +328,243 @@ def fetch_barchart_rows(
             f"No Barchart rows returned for {row_type}. Check BARCHART_LISTS in collect_52wk.py."
         )
     return rows
+
+
+def barchart_request_params(row_type: str, page: int, page_size: int) -> dict[str, Any]:
+    return {
+        "lists": BARCHART_LISTS[row_type],
+        "fields": BARCHART_FIELDS,
+        "orderBy": "symbol",
+        "orderDir": "asc",
+        "meta": "field.shortName,field.type,field.description,lists.lastUpdate",
+        "hasOptions": "true",
+        "page": page,
+        "limit": page_size,
+        "raw": 1,
+    }
+
+
+class BarchartBrowserClient:
+    """Fetch Barchart API data from an anonymous, JavaScript-capable browser context."""
+
+    def __init__(self) -> None:
+        try:
+            from playwright.sync_api import Error as PlaywrightError
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise RuntimeError(
+                "The Barchart browser fallback requires Playwright. Run: "
+                "pip install -r requirements.txt"
+            ) from exc
+
+        executable = find_browser_executable()
+        self._playwright_error = PlaywrightError
+        self._playwright = sync_playwright().start()
+        self._browser = None
+        self._context = None
+
+        launch_options: dict[str, Any] = {
+            "headless": True,
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
+        if executable:
+            launch_options["executable_path"] = executable
+
+        try:
+            self._browser = self._playwright.chromium.launch(**launch_options)
+        except PlaywrightError as exc:
+            self._playwright.stop()
+            location_hint = (
+                "Set BARCHART_BROWSER_EXECUTABLE to Chrome/Chromium, or run: "
+                "python -m playwright install chromium"
+            )
+            raise RuntimeError(f"Could not launch a browser. {location_hint}") from exc
+
+        user_agent = browser_user_agent(self._browser.version)
+        self._context = self._browser.new_context(
+            user_agent=user_agent,
+            locale="en-US",
+            viewport={"width": 1440, "height": 1000},
+        )
+
+    def fetch_rows(
+        self, row_type: str, collection_date: str, limit: int
+    ) -> list[BarchartRow]:
+        assert self._context is not None
+        page = self._context.new_page()
+        referer = f"{PAGES[row_type]}?viewName=main"
+        rows: list[BarchartRow] = []
+        page_size = min(max(limit, 1), 1000)
+
+        try:
+            response = page.goto(referer, wait_until="domcontentloaded", timeout=60_000)
+            if response is None or response.status in {401, 403}:
+                status = response.status if response is not None else "unknown"
+                raise BarchartAccessError(
+                    f"Barchart rejected the anonymous browser page with HTTP {status}."
+                )
+            if not response.ok:
+                raise RuntimeError(
+                    f"Barchart page returned HTTP {response.status} in the browser fallback."
+                )
+
+            page_number = 1
+            while len(rows) < limit:
+                params = barchart_request_params(row_type, page_number, page_size)
+                result = self._evaluate_api_request(page, params, row_type)
+
+                status = int(result.get("status") or 0)
+                if status in {401, 403}:
+                    raise BarchartAccessError(
+                        f"Barchart rejected the in-browser {row_type} API request with "
+                        f"HTTP {status}."
+                    )
+                if not result.get("ok"):
+                    raise RuntimeError(
+                        f"Barchart in-browser {row_type} API request failed with HTTP {status}."
+                    )
+
+                payload = result.get("payload") or {}
+                data = payload.get("data") or []
+                if not data:
+                    break
+
+                for item in data:
+                    rows.append(normalize_barchart_item(item, row_type, collection_date))
+                    if len(rows) >= limit:
+                        break
+
+                total = int(payload.get("total") or payload.get("count") or len(rows))
+                if len(rows) >= total or len(data) < page_size:
+                    break
+                page_number += 1
+                page.wait_for_timeout(200)
+        except self._playwright_error as exc:
+            raise RuntimeError(f"Barchart browser fallback failed: {exc}") from exc
+        finally:
+            page.close()
+
+        if not rows:
+            raise RuntimeError(
+                f"No Barchart rows returned for {row_type} in the browser fallback."
+            )
+        return rows
+
+    def _evaluate_api_request(
+        self, page: Any, params: dict[str, Any], row_type: str
+    ) -> dict[str, Any]:
+        for attempt in range(1, BARCHART_BROWSER_EVALUATE_ATTEMPTS + 1):
+            try:
+                return page.evaluate(
+                    """
+                    async ({url, params}) => {
+                      const query = new URLSearchParams();
+                      for (const [key, value] of Object.entries(params)) {
+                        query.set(key, String(value));
+                      }
+                      const response = await fetch(`${url}?${query.toString()}`, {
+                        credentials: "include",
+                        headers: {
+                          "Accept": "application/json, text/plain, */*",
+                          "X-Requested-With": "XMLHttpRequest"
+                        }
+                      });
+                      let payload = null;
+                      try {
+                        payload = await response.json();
+                      } catch (_) {
+                        // The Python side will report the status and missing payload.
+                      }
+                      return {status: response.status, ok: response.ok, payload};
+                    }
+                    """,
+                    {"url": BARCHART_API, "params": params},
+                )
+            except self._playwright_error as exc:
+                if not is_transient_navigation_error(exc):
+                    raise
+                if attempt == BARCHART_BROWSER_EVALUATE_ATTEMPTS:
+                    raise
+
+                delay_ms = 500 * attempt
+                print(
+                    f"Barchart {row_type} page navigated during its API request; "
+                    f"retrying ({attempt}/{BARCHART_BROWSER_EVALUATE_ATTEMPTS - 1}).",
+                    file=sys.stderr,
+                )
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=15_000)
+                except self._playwright_error:
+                    # A second navigation may supersede the first one; the delay
+                    # below gives the replacement document a chance to settle.
+                    pass
+                page.wait_for_timeout(delay_ms)
+
+        raise AssertionError("unreachable")
+
+    def close(self) -> None:
+        if self._context is not None:
+            self._context.close()
+            self._context = None
+        if self._browser is not None:
+            self._browser.close()
+            self._browser = None
+        if self._playwright is not None:
+            self._playwright.stop()
+            self._playwright = None
+
+
+def find_browser_executable() -> str | None:
+    configured = os.environ.get("BARCHART_BROWSER_EXECUTABLE")
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_file():
+            raise RuntimeError(
+                f"BARCHART_BROWSER_EXECUTABLE does not point to a file: {path}"
+            )
+        return str(path)
+
+    command_candidates = (
+        "google-chrome-stable",
+        "google-chrome",
+        "chromium",
+        "chromium-browser",
+    )
+    for command in command_candidates:
+        executable = shutil.which(command)
+        if executable:
+            return executable
+
+    app_candidates = (
+        Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+    )
+    for path in app_candidates:
+        if path.is_file():
+            return str(path)
+    return None
+
+
+def browser_user_agent(browser_version: str) -> str:
+    system = platform.system()
+    if system == "Darwin":
+        platform_token = "Macintosh; Intel Mac OS X 10_15_7"
+    elif system == "Windows":
+        platform_token = "Windows NT 10.0; Win64; x64"
+    else:
+        platform_token = "X11; Linux x86_64"
+    return (
+        f"Mozilla/5.0 ({platform_token}) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{browser_version} Safari/537.36"
+    )
+
+
+def is_transient_navigation_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return (
+        "execution context was destroyed" in message
+        or "cannot find context with specified id" in message
+    )
 
 
 def normalize_barchart_item(item: dict[str, Any], row_type: str, collection_date: str) -> BarchartRow:

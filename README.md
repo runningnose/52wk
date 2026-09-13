@@ -8,6 +8,7 @@ Collects the current Barchart 52-week high and low stock lists, enriches them wi
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
 ## Run
@@ -36,6 +37,30 @@ python collect_52wk.py --date 2026-07-25 --db data/52wk.sqlite3 --out public
 ```
 
 Use `--skip-yahoo` to test Barchart collection without Yahoo enrichment.
+
+Use `--random-delay` to wait a randomly selected 1 to 59 minutes before the
+script starts:
+
+```bash
+python collect_52wk.py --random-delay
+```
+
+Barchart collection uses the anonymous Playwright browser by default and does
+not call the direct HTTP API. No Barchart login is required. To try the direct
+API first and automatically fall back to the browser on HTTP 401 or 403, use:
+
+```bash
+python collect_52wk.py --try-barchart-api
+```
+
+The older `--barchart-source auto|http|browser` option remains available for
+explicit source selection and backward compatibility.
+
+If Chrome or Chromium is installed outside a standard location, set its path:
+
+```bash
+export BARCHART_BROWSER_EXECUTABLE=/path/to/google-chrome
+```
 
 Use `--render-only` to rebuild `public/` pages from the existing SQLite data without scraping again:
 
