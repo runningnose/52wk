@@ -30,6 +30,26 @@ The SQLite table has a unique key on `(date, ticker, type)`.
 
 The script avoids newer SQLite upsert syntax and works with SQLite 3.7.x.
 
+## Output location
+
+Set the HTML output directory in `env.txt`:
+
+```text
+HTML_OUTPUT_DIR=public
+```
+
+Relative paths are resolved from the directory containing `collect_52wk.py`.
+For an OCI server, the setting can instead use an absolute web directory:
+
+```text
+HTML_OUTPUT_DIR=/var/www/52wk
+```
+
+The process running the script must have permission to create and update files
+in that directory. The SQLite database remains at `data/52wk.sqlite3` next to
+the script unless `--db` is supplied. An explicit `--out` option overrides the
+value in `env.txt`.
+
 ## Options
 
 ```bash

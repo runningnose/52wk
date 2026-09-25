@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import html
+import json
 import math
 import os
 import platform
@@ -28,6 +29,9 @@ except ImportError:  # pragma: no cover
 BARCHART_BASE = "https://www.barchart.com"
 BARCHART_API = f"{BARCHART_BASE}/proxies/core-api/v1/quotes/get"
 BARCHART_BROWSER_EVALUATE_ATTEMPTS = 3
+SCRIPT_DIR = Path(__file__).resolve().parent
+ENV_FILE = SCRIPT_DIR / "env.txt"
+DEFAULT_DB_PATH = SCRIPT_DIR / "data" / "52wk.sqlite3"
 
 PAGES = {
     "high": f"{BARCHART_BASE}/stocks/highs-lows/highs",
@@ -94,13 +98,56 @@ class BarchartAccessError(RuntimeError):
     """Raised when Barchart rejects an otherwise valid public-page request."""
 
 
+def load_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), 1
+    ):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError(f"{path}:{line_number}: expected KEY=VALUE")
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            raise ValueError(f"{path}:{line_number}: setting name cannot be empty")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def resolve_script_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else SCRIPT_DIR / path
+
+
 def main() -> int:
+    try:
+        settings = load_env_file(ENV_FILE)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    configured_output = settings.get("HTML_OUTPUT_DIR", "public")
+    if not configured_output:
+        raise SystemExit(f"{ENV_FILE}: HTML_OUTPUT_DIR cannot be empty")
+
     parser = argparse.ArgumentParser(
         description="Collect Barchart 52-week highs/lows and enrich with Yahoo Finance."
     )
     parser.add_argument("--date", default=dt.date.today().isoformat())
-    parser.add_argument("--db", default="data/52wk.sqlite3")
-    parser.add_argument("--out", default="public")
+    parser.add_argument("--db", default=str(DEFAULT_DB_PATH))
+    parser.add_argument(
+        "--out",
+        default=str(resolve_script_path(configured_output)),
+        help="HTML output directory; overrides HTML_OUTPUT_DIR in env.txt.",
+    )
     parser.add_argument("--limit", type=int, default=5000)
     parser.add_argument("--skip-yahoo", action="store_true")
     parser.add_argument(
@@ -138,7 +185,7 @@ def main() -> int:
     if yf is None and not args.skip_yahoo and not args.render_only:
         raise SystemExit("yfinance is not installed. Run: pip install -r requirements.txt")
 
-    db_path = Path(args.db)
+    db_path = resolve_script_path(args.db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         init_db(conn)
@@ -217,7 +264,7 @@ def main() -> int:
             for row in archive_rows
         }
 
-    out_dir = Path(args.out)
+    out_dir = resolve_script_path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     for archive in archive_rows:
         collection_date = archive["date"]
@@ -733,6 +780,7 @@ def get_archive_summary(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def write_index(path: Path, archive_rows: list[dict[str, Any]]) -> None:
     latest = archive_rows[0]["date"] if archive_rows else "-"
     archive_body = "\n".join(archive_row(row) for row in archive_rows)
+    chart_script = historical_sentiment_script(archive_rows)
     path.write_text(
         f"""<!doctype html>
 <html lang="en">
@@ -745,11 +793,30 @@ def write_index(path: Path, archive_rows: list[dict[str, Any]]) -> None:
 <body>
   <main class="wrap">
     <h1>52-Week Highs/Lows</h1>
+    <p class="description">Tracks the daily number of stocks reaching new 52-week highs and lows. The high-to-low ratio offers a quick view of market sentiment: lower values suggest fear, while higher values suggest greed.</p>
     <p class="meta">Latest run: {html.escape(str(latest))} · Archived days: {len(archive_rows)}</p>
+    <div class="temperature-legend">
+      <span class="temperature-title">Market sentiment</span>
+      <div class="temperature-key">
+        <div class="temperature-labels" aria-hidden="true">
+          <span>Fear</span>
+          <span>Neutral</span>
+          <span>Greed</span>
+        </div>
+        <div class="temperature-scale" role="img" aria-label="Market sentiment scale from cold blue for lower high-to-low ratios to fire red for higher ratios"></div>
+        <canvas id="sentiment-chart" class="sentiment-chart" width="560" height="82" role="img" aria-label="Historical high-to-low ratio trend over time; fear is lower, neutral is centered, and greed is higher"></canvas>
+      </div>
+    </div>
     <div class="table-shell archive">
       <table>
+        <colgroup>
+          <col class="archive-date">
+          <col class="archive-count">
+          <col class="archive-count">
+          <col class="archive-ratio">
+        </colgroup>
         <thead>
-          <tr><th>Date</th><th>Highs</th><th>Lows</th><th>Daily Page</th><th>Highs Page</th><th>Lows Page</th></tr>
+          <tr><th>Date</th><th>Highs</th><th>Lows</th><th>High/Low Ratio</th></tr>
         </thead>
         <tbody>
 {archive_body}
@@ -757,6 +824,7 @@ def write_index(path: Path, archive_rows: list[dict[str, Any]]) -> None:
       </table>
     </div>
   </main>
+{chart_script}
 </body>
 </html>
 """,
@@ -804,14 +872,193 @@ def archive_row(row: dict[str, Any]) -> str:
     escaped_date = html.escape(collection_date)
     return (
         "          <tr>"
-        f"<td>{escaped_date}</td>"
-        f"<td>{high_count:,}</td>"
-        f"<td>{low_count:,}</td>"
-        f'<td><a href="{escaped_date}.html">Open</a></td>'
-        f'<td><a href="{escaped_date}-highs.html">Highs</a></td>'
-        f'<td><a href="{escaped_date}-lows.html">Lows</a></td>'
+        f'<td><a href="{escaped_date}.html">{escaped_date}</a></td>'
+        f'<td><a href="{escaped_date}-highs.html">{high_count:,}</a></td>'
+        f'<td><a href="{escaped_date}-lows.html">{low_count:,}</a></td>'
+        f"<td>{archive_ratio_indicator(high_count, low_count)}</td>"
         "</tr>"
     )
+
+
+def archive_ratio_indicator(high_count: int, low_count: int) -> str:
+    total = high_count + low_count
+    if total == 0:
+        return '<span class="ratio-empty">—</span>'
+
+    temperature = ratio_temperature_value(high_count, low_count)
+    assert temperature is not None
+    if low_count == 0:
+        ratio_text = "∞"
+    else:
+        ratio = high_count / low_count
+        ratio_text = f"{ratio:.2f}×"
+
+    if temperature < 0.25:
+        temperature_label = "cold"
+    elif temperature < 0.5:
+        temperature_label = "cool"
+    elif temperature == 0.5:
+        temperature_label = "balanced"
+    elif temperature < 0.75:
+        temperature_label = "warm"
+    else:
+        temperature_label = "hot"
+
+    background_color = ratio_temperature_color(temperature)
+    text_color = contrasting_text_color(background_color)
+    accessible_label = html.escape(
+        f"High to low ratio {ratio_text}; market temperature {temperature_label}",
+        quote=True,
+    )
+    return (
+        f'<span class="ratio-temperature" aria-label="{accessible_label}" '
+        f'style="background-color:{background_color};color:{text_color}">'
+        f"{html.escape(ratio_text)}</span>"
+    )
+
+
+def ratio_temperature_value(high_count: int, low_count: int) -> float | None:
+    if high_count + low_count == 0:
+        return None
+    if low_count == 0:
+        return 1.0
+
+    ratio = high_count / low_count
+    if ratio == 0:
+        return 0.0
+
+    # A logarithmic scale makes reciprocal ratios equally distant from
+    # balanced: 0.5x and 2.0x receive symmetric temperatures. Values from
+    # 0.125x through 8.0x span the full fear-to-greed scale.
+    return min(max((math.log2(ratio) + 3) / 6, 0.0), 1.0)
+
+
+def historical_sentiment_script(archive_rows: list[dict[str, Any]]) -> str:
+    values = []
+    for row in reversed(archive_rows):
+        temperature = ratio_temperature_value(
+            int(row.get("high_count") or 0), int(row.get("low_count") or 0)
+        )
+        if temperature is not None:
+            values.append(round(temperature, 6))
+
+    script = """  <script>
+  (() => {
+    const values = __SENTIMENT_VALUES__;
+    const canvas = document.getElementById("sentiment-chart");
+    if (!canvas || values.length === 0) return;
+
+    const draw = () => {
+      const width = Math.max(Math.round(canvas.clientWidth), 1);
+      const height = Math.max(Math.round(canvas.clientHeight), 1);
+      const scale = window.devicePixelRatio || 1;
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+
+      const context = canvas.getContext("2d");
+      context.scale(scale, scale);
+      context.clearRect(0, 0, width, height);
+
+      const padding = 7;
+      const chartWidth = width - padding * 2;
+      const chartHeight = height - padding * 2;
+      const points = values.map((value, index) => ({
+        x: values.length === 1
+          ? width / 2
+          : padding + (index / (values.length - 1)) * chartWidth,
+        y: padding + (1 - value) * chartHeight
+      }));
+
+      const neutralY = padding + chartHeight / 2;
+      context.beginPath();
+      context.setLineDash([4, 4]);
+      context.moveTo(padding, neutralY);
+      context.lineTo(width - padding, neutralY);
+      context.strokeStyle = "rgba(100, 116, 139, 0.35)";
+      context.lineWidth = 1;
+      context.stroke();
+      context.setLineDash([]);
+
+      context.beginPath();
+      context.moveTo(points[0].x, height - padding);
+      points.forEach((point) => context.lineTo(point.x, point.y));
+      context.lineTo(points[points.length - 1].x, height - padding);
+      context.closePath();
+      const area = context.createLinearGradient(0, padding, 0, height - padding);
+      area.addColorStop(0, "rgba(220, 38, 38, 0.22)");
+      area.addColorStop(0.5, "rgba(234, 179, 8, 0.09)");
+      area.addColorStop(1, "rgba(37, 99, 235, 0.18)");
+      context.fillStyle = area;
+      context.fill();
+
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
+      const line = context.createLinearGradient(0, padding, 0, height - padding);
+      line.addColorStop(0, "#dc2626");
+      line.addColorStop(0.25, "#f97316");
+      line.addColorStop(0.5, "#eab308");
+      line.addColorStop(0.75, "#06b6d4");
+      line.addColorStop(1, "#2563eb");
+      context.strokeStyle = line;
+      context.lineWidth = 2.5;
+      context.lineJoin = "round";
+      context.lineCap = "round";
+      context.stroke();
+    };
+
+    draw();
+    if ("ResizeObserver" in window) {
+      new ResizeObserver(draw).observe(canvas);
+    } else {
+      window.addEventListener("resize", draw);
+    }
+  })();
+  </script>"""
+    return script.replace(
+        "__SENTIMENT_VALUES__", json.dumps(values, separators=(",", ":"))
+    )
+
+
+def ratio_temperature_color(temperature: float) -> str:
+    stops = (
+        (0.00, (37, 99, 235)),
+        (0.25, (6, 182, 212)),
+        (0.50, (234, 179, 8)),
+        (0.75, (249, 115, 22)),
+        (1.00, (220, 38, 38)),
+    )
+    temperature = min(max(temperature, 0.0), 1.0)
+    for (start_at, start_rgb), (end_at, end_rgb) in zip(stops, stops[1:]):
+        if temperature <= end_at:
+            progress = (temperature - start_at) / (end_at - start_at)
+            rgb = tuple(
+                round(start + (end - start) * progress)
+                for start, end in zip(start_rgb, end_rgb)
+            )
+            return "#" + "".join(f"{channel:02x}" for channel in rgb)
+    return "#dc2626"
+
+
+def contrasting_text_color(background_color: str) -> str:
+    channels = [
+        int(background_color[index : index + 2], 16) / 255
+        for index in (1, 3, 5)
+    ]
+    linear_channels = [
+        channel / 12.92
+        if channel <= 0.04045
+        else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    ]
+    luminance = (
+        0.2126 * linear_channels[0]
+        + 0.7152 * linear_channels[1]
+        + 0.0722 * linear_channels[2]
+    )
+    white_contrast = 1.05 / (luminance + 0.05)
+    black_contrast = (luminance + 0.05) / 0.05
+    return "#ffffff" if white_contrast >= black_contrast else "#111827"
 
 
 def write_page(
@@ -965,6 +1212,13 @@ h1 {
   font-size: 28px;
   font-weight: 700;
 }
+.description {
+  max-width: 760px;
+  margin: 0 0 8px;
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.5;
+}
 .meta {
   margin: 0;
   color: #64748b;
@@ -1001,7 +1255,20 @@ table {
   border-collapse: collapse;
 }
 .archive table {
-  min-width: 720px;
+  min-width: 560px;
+  table-layout: fixed;
+}
+.archive {
+  max-width: 900px;
+}
+.archive-date {
+  width: 26%;
+}
+.archive-count {
+  width: 17%;
+}
+.archive-ratio {
+  width: 40%;
 }
 th,
 td {
@@ -1013,13 +1280,80 @@ td {
 }
 .archive th,
 .archive td {
-  text-align: left;
+  text-align: center;
 }
-.archive th:nth-child(2),
-.archive th:nth-child(3),
-.archive td:nth-child(2),
-.archive td:nth-child(3) {
+.temperature-legend {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  max-width: 720px;
+  margin-top: 14px;
+}
+.temperature-title {
+  padding-top: 20px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.temperature-key {
+  flex: 1;
+  min-width: 360px;
+}
+.temperature-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 5px;
+  color: #52606d;
+  font-size: 12px;
+}
+.temperature-labels span:nth-child(2) {
+  text-align: center;
+}
+.temperature-labels span:last-child {
   text-align: right;
+}
+.temperature-scale {
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2563eb 0%, #06b6d4 25%, #eab308 50%, #f97316 75%, #dc2626 100%);
+  box-shadow: inset 0 0 0 1px rgb(15 23 42 / 12%);
+}
+.sentiment-chart {
+  display: block;
+  width: 100%;
+  height: 82px;
+  margin-top: 8px;
+  border: 1px solid #d9e2ec;
+  border-radius: 6px;
+  background: #fff;
+}
+.ratio-temperature {
+  display: inline-block;
+  min-width: 54px;
+  padding: 5px 9px;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px rgb(15 23 42 / 10%);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.ratio-empty {
+  color: #8a94a3;
+}
+@media (max-width: 640px) {
+  .temperature-legend {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .temperature-title {
+    padding-top: 0;
+  }
+  .temperature-key {
+    min-width: 0;
+  }
 }
 th {
   position: sticky;
@@ -1027,10 +1361,12 @@ th {
   z-index: 1;
   color: #334155;
   background: #eef3f8;
+}
+#stock-table th {
   cursor: pointer;
   user-select: none;
 }
-th::after {
+#stock-table th::after {
   content: " ↕";
   color: #8796a8;
   font-size: 11px;
