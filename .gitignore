@@ -1,5 +1,5 @@
 public/
 env.txt
-data/*.sqlite3
-data/*.sqlite3-wal
-data/*.sqlite3-shm.
+data/52wk.sqlite3
+data/52wk.sqlite3-wal
+data/52wk.sqlite3-shm
