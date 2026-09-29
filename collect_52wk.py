@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import html
 import json
 import math
@@ -32,9 +33,10 @@ BARCHART_BROWSER_EVALUATE_ATTEMPTS = 3
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_FILE = SCRIPT_DIR / "env.txt"
 DEFAULT_DB_PATH = SCRIPT_DIR / "data" / "52wk.sqlite3"
-# Bump this value whenever generated CSS or JavaScript changes. The query
-# string prevents browsers and intermediary caches from serving stale assets.
-STATIC_ASSET_VERSION = "20260928-mobile-2"
+# Use the collector source as an automatic deployment fingerprint. Any change
+# that can alter generated HTML, CSS, or JavaScript produces a new asset URL,
+# preventing browsers and intermediary caches from serving stale files.
+STATIC_ASSET_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
 
 PAGES = {
     "high": f"{BARCHART_BASE}/stocks/highs-lows/highs",
@@ -1093,6 +1095,14 @@ def write_page(
       </div>
       <nav><a href="index.html">Index</a></nav>
     </div>
+    <div class="detail-toolbar">
+      <div class="view-switch" role="group" aria-label="Detail page layout">
+        <span>View</span>
+        <button type="button" data-table-view="table" aria-pressed="true">Table</button>
+        <button type="button" data-table-view="cards" aria-pressed="false">Cards</button>
+      </div>
+      <span class="scroll-hint">Swipe horizontally to see all columns</span>
+    </div>
     <div class="table-shell stock-table-shell">
       <table id="stock-table">
         <thead><tr>{"".join(f"<th>{html.escape(header)}</th>" for header in headers)}</tr></thead>
@@ -1393,6 +1403,9 @@ th {
 tbody tr:hover {
   background: #f8fafc;
 }
+.detail-toolbar {
+  display: none;
+}
 @media (max-width: 720px) {
   .wrap {
     padding: 14px 12px;
@@ -1441,20 +1454,69 @@ tbody tr:hover {
     min-width: 44px;
     padding: 4px 6px;
   }
-
-  /* The desktop stock grid has too many columns for a useful phone layout.
-     On small screens, retain the table semantics but present each row as a
-     compact, two-column card with an inline label for every value. */
+  .detail-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 16px;
+  }
+  .view-switch {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    gap: 3px;
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .view-switch button {
+    border: 1px solid #cbd5e1;
+    padding: 5px 8px;
+    color: #334155;
+    background: #fff;
+    font: inherit;
+    text-transform: none;
+  }
+  .view-switch button:first-of-type {
+    border-radius: 5px 0 0 5px;
+  }
+  .view-switch button:last-child {
+    border-radius: 0 5px 5px 0;
+  }
+  .view-switch button[aria-pressed="true"] {
+    border-color: #0f5e9c;
+    color: #fff;
+    background: #0f5e9c;
+  }
+  .scroll-hint {
+    color: #64748b;
+    font-size: 11px;
+    text-align: right;
+  }
   .stock-table-shell {
+    margin-top: 8px;
+    -webkit-overflow-scrolling: touch;
+  }
+  #stock-table th,
+  #stock-table td {
+    padding: 7px 8px;
+    font-size: 12px;
+  }
+
+  /* Table view is the mobile default so rows remain easy to compare. The
+     optional card view favors reading one stock at a time. */
+  .stock-table-shell.card-view {
     overflow: visible;
     border: 0;
     background: transparent;
   }
-  #stock-table {
+  .card-view #stock-table {
     display: block;
     min-width: 0;
   }
-  #stock-table thead {
+  .card-view #stock-table thead {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -1465,11 +1527,11 @@ tbody tr:hover {
     white-space: nowrap;
     border: 0;
   }
-  #stock-table tbody {
+  .card-view #stock-table tbody {
     display: grid;
     gap: 12px;
   }
-  #stock-table tr {
+  .card-view #stock-table tr {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     padding: 8px;
@@ -1478,7 +1540,7 @@ tbody tr:hover {
     background: #fff;
     box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
   }
-  #stock-table td {
+  .card-view #stock-table td {
     display: flex;
     min-width: 0;
     padding: 6px;
@@ -1489,7 +1551,7 @@ tbody tr:hover {
     text-align: left;
     white-space: normal;
   }
-  #stock-table td::before {
+  .card-view #stock-table td::before {
     content: attr(data-label);
     color: #64748b;
     font-size: 10px;
@@ -1498,21 +1560,21 @@ tbody tr:hover {
     line-height: 1.2;
     text-transform: uppercase;
   }
-  #stock-table td:nth-child(3) {
+  .card-view #stock-table td:nth-child(3) {
     grid-column: 1 / -1;
   }
-  #stock-table td:nth-child(2) a {
+  .card-view #stock-table td:nth-child(2) a {
     font-size: 16px;
     font-weight: 700;
   }
-  #stock-table td:nth-child(1),
-  #stock-table td:nth-child(4),
-  #stock-table td:nth-child(5),
-  #stock-table td:nth-child(6),
-  #stock-table td:nth-child(7),
-  #stock-table td:nth-child(8),
-  #stock-table td:nth-child(9),
-  #stock-table td:nth-child(13) {
+  .card-view #stock-table td:nth-child(1),
+  .card-view #stock-table td:nth-child(4),
+  .card-view #stock-table td:nth-child(5),
+  .card-view #stock-table td:nth-child(6),
+  .card-view #stock-table td:nth-child(7),
+  .card-view #stock-table td:nth-child(8),
+  .card-view #stock-table td:nth-child(9),
+  .card-view #stock-table td:nth-child(13) {
     text-align: left;
   }
 }
@@ -1533,6 +1595,38 @@ if (table) {
     });
   });
   sortColumn(0, "desc");
+}
+
+const tableShell = document.querySelector(".stock-table-shell");
+const viewButtons = document.querySelectorAll("[data-table-view]");
+const scrollHint = document.querySelector(".scroll-hint");
+if (tableShell && viewButtons.length) {
+  let savedView = "table";
+  try {
+    savedView = localStorage.getItem("stock-detail-view") || "table";
+  } catch (error) {
+    // Storage can be unavailable in privacy-focused browser modes.
+  }
+  setTableView(savedView === "cards" ? "cards" : "table", false);
+  viewButtons.forEach(button => {
+    button.addEventListener("click", () => setTableView(button.dataset.tableView));
+  });
+}
+
+function setTableView(view, remember = true) {
+  const showCards = view === "cards";
+  tableShell.classList.toggle("card-view", showCards);
+  viewButtons.forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.tableView === view));
+  });
+  if (scrollHint) scrollHint.hidden = showCards;
+  if (remember) {
+    try {
+      localStorage.setItem("stock-detail-view", view);
+    } catch (error) {
+      // The selected view still works for the current page without storage.
+    }
+  }
 }
 
 function sortColumn(index, direction) {
