@@ -1090,7 +1090,7 @@ def write_page(
       </div>
       <nav><a href="index.html">Index</a></nav>
     </div>
-    <div class="table-shell">
+    <div class="table-shell stock-table-shell">
       <table id="stock-table">
         <thead><tr>{"".join(f"<th>{html.escape(header)}</th>" for header in headers)}</tr></thead>
         <tbody>
@@ -1161,24 +1161,30 @@ def table_row(row: dict[str, Any], page_type: str) -> str:
             fmt(row.get("type")),
             fmt_percent(row.get("fifty_two_week_percent_low")),
         ]
-        return "          <tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
+    else:
+        cells = [
+            fmt_market_cap(row.get("market_cap")),
+            f'<a href="{ticker_url}" target="_blank" rel="noopener">{html.escape(ticker)}</a>',
+            fmt(row.get("company_name")),
+            fmt_number(row.get("latest_price")),
+            fmt_percent(row.get("percent_change")),
+            fmt_percent(row.get("fifty_two_week_percent_low")),
+            fmt_volume(row.get("volume")),
+            fmt_number(row.get("pe")),
+            fmt_percent(row.get("dividend_yield")),
+            fmt(row.get("sector")),
+            fmt(row.get("earnings_date")),
+            fmt(row.get("type")),
+            fmt_percent(row.get("fifty_two_week_percent_high")),
+        ]
 
-    cells = [
-        fmt_market_cap(row.get("market_cap")),
-        f'<a href="{ticker_url}" target="_blank" rel="noopener">{html.escape(ticker)}</a>',
-        fmt(row.get("company_name")),
-        fmt_number(row.get("latest_price")),
-        fmt_percent(row.get("percent_change")),
-        fmt_percent(row.get("fifty_two_week_percent_low")),
-        fmt_volume(row.get("volume")),
-        fmt_number(row.get("pe")),
-        fmt_percent(row.get("dividend_yield")),
-        fmt(row.get("sector")),
-        fmt(row.get("earnings_date")),
-        fmt(row.get("type")),
-        fmt_percent(row.get("fifty_two_week_percent_high")),
-    ]
-    return "          <tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
+    # The labels are used by the responsive card layout, where the table header
+    # is visually hidden and each value needs to remain self-describing.
+    labeled_cells = "".join(
+        f'<td data-label="{html.escape(header, quote=True)}">{cell}</td>'
+        for header, cell in zip(table_headers(page_type), cells)
+    )
+    return f"          <tr>{labeled_cells}</tr>"
 
 
 def market_cap_sort_value(row: dict[str, Any]) -> int:
@@ -1251,11 +1257,11 @@ a:hover {
 }
 table {
   width: 100%;
-  min-width: 1280px;
+  min-width: 1120px;
   border-collapse: collapse;
 }
 .archive table {
-  min-width: 560px;
+  min-width: 0;
   table-layout: fixed;
 }
 .archive {
@@ -1386,11 +1392,125 @@ tbody tr:hover {
 }
 @media (max-width: 720px) {
   .wrap {
-    padding: 18px;
+    padding: 14px 12px;
+  }
+  h1 {
+    font-size: 23px;
+  }
+  .description {
+    font-size: 13px;
   }
   .topbar {
     align-items: start;
     flex-direction: column;
+    gap: 12px;
+  }
+  .links {
+    flex-wrap: wrap;
+    margin-top: 18px;
+  }
+  .archive {
+    margin-top: 16px;
+    overflow: hidden;
+  }
+  .archive-date {
+    width: 30%;
+  }
+  .archive-count {
+    width: 16%;
+  }
+  .archive-ratio {
+    width: 38%;
+  }
+  .archive th,
+  .archive td {
+    padding: 8px 4px;
+    font-size: 12px;
+  }
+  .archive th:last-child {
+    font-size: 0;
+  }
+  .archive th:last-child::after {
+    content: "Ratio";
+    font-size: 12px;
+  }
+  .ratio-temperature {
+    min-width: 44px;
+    padding: 4px 6px;
+  }
+
+  /* The desktop stock grid has too many columns for a useful phone layout.
+     On small screens, retain the table semantics but present each row as a
+     compact, two-column card with an inline label for every value. */
+  .stock-table-shell {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+  #stock-table {
+    display: block;
+    min-width: 0;
+  }
+  #stock-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  #stock-table tbody {
+    display: grid;
+    gap: 12px;
+  }
+  #stock-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 8px;
+    border: 1px solid #d9e2ec;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+  }
+  #stock-table td {
+    display: flex;
+    min-width: 0;
+    padding: 6px;
+    border: 0;
+    flex-direction: column;
+    gap: 2px;
+    overflow-wrap: anywhere;
+    text-align: left;
+    white-space: normal;
+  }
+  #stock-table td::before {
+    content: attr(data-label);
+    color: #64748b;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+    text-transform: uppercase;
+  }
+  #stock-table td:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+  #stock-table td:nth-child(2) a {
+    font-size: 16px;
+    font-weight: 700;
+  }
+  #stock-table td:nth-child(1),
+  #stock-table td:nth-child(4),
+  #stock-table td:nth-child(5),
+  #stock-table td:nth-child(6),
+  #stock-table td:nth-child(7),
+  #stock-table td:nth-child(8),
+  #stock-table td:nth-child(9),
+  #stock-table td:nth-child(13) {
+    text-align: left;
   }
 }
 """,
