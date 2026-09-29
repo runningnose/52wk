@@ -32,6 +32,9 @@ BARCHART_BROWSER_EVALUATE_ATTEMPTS = 3
 SCRIPT_DIR = Path(__file__).resolve().parent
 ENV_FILE = SCRIPT_DIR / "env.txt"
 DEFAULT_DB_PATH = SCRIPT_DIR / "data" / "52wk.sqlite3"
+# Bump this value whenever generated CSS or JavaScript changes. The query
+# string prevents browsers and intermediary caches from serving stale assets.
+STATIC_ASSET_VERSION = "20260928-mobile-2"
 
 PAGES = {
     "high": f"{BARCHART_BASE}/stocks/highs-lows/highs",
@@ -788,7 +791,7 @@ def write_index(path: Path, archive_rows: list[dict[str, Any]]) -> None:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>52-Week Highs/Lows</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v={STATIC_ASSET_VERSION}">
 </head>
 <body>
   <main class="wrap">
@@ -841,7 +844,7 @@ def write_daily_summary(path: Path, collection_date: str, high_count: int, low_c
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>52-Week Highs/Lows - {html.escape(collection_date)}</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v={STATIC_ASSET_VERSION}">
 </head>
 <body>
   <main class="wrap narrow">
@@ -1079,7 +1082,7 @@ def write_page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)} - {html.escape(collection_date)}</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v={STATIC_ASSET_VERSION}">
 </head>
 <body>
   <main class="wrap">
@@ -1099,7 +1102,7 @@ def write_page(
       </table>
     </div>
   </main>
-  <script src="sort-table.js"></script>
+  <script src="sort-table.js?v={STATIC_ASSET_VERSION}"></script>
 </body>
 </html>
 """,
